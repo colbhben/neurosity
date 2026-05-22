@@ -1,0 +1,15 @@
+name: item_mux
+data_root: data/item_mux
+window_start_ms: 0.0
+window_seconds: 2.0
+heads:
+  item:
+    type: classify
+    classes: [HIGHLIGHTER, PEN]
+    weight: 1.0
+    label_field: label
+  location:
+    type: classify
+    num_classes: 2
+    weight: 0.5
+    label_field: location

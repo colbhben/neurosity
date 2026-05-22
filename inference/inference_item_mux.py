@@ -10,13 +10,13 @@ Example calls (run from the repo root):
 
     # Single session.
     python inference/inference_item_mux.py \\
-        --model training/models/ITEM_MUX_500/item_mux_eegnet.pt \\
+        --model training/eegnet_models/ITEM_MUX_500/item_mux_eegnet.pt \\
         --session_ids 2026-05-19_17-14-52 \\
         --name read_react
 
     # Evaluate across multiple sessions.
     python inference/inference_item_mux.py \\
-        --model training/models/ITEM_MUX_500/item_mux_eegnet.pt \\
+        --model training/eegnet_models/ITEM_MUX_500/item_mux_eegnet.pt \\
         --session_ids 2026-05-19_17-14-52 2026-05-20_09-12-03 \\
         --name eval_2026-05-20
 

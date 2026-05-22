@@ -3,6 +3,9 @@
 /data
 /inference/data
 /training/models
+/training/*_models
+/sweep
+**/_session_io.py
 venv
 dist
 build

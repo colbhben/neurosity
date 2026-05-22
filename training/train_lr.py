@@ -389,7 +389,7 @@ def train(args):
             f"Best epoch {best_epoch}: val_loss={best_val_loss:.4f} val_acc={best_val_acc:.3f}"
         )
 
-    out_dir = os.path.join("training", "models", args.name)
+    out_dir = os.path.join("training", "eegnet_models", args.name)
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "lr_eegnet.pt")
     torch.save(model.state_dict(), out_path)
@@ -555,7 +555,7 @@ def main():
     parser.add_argument(
         "--name",
         required=True,
-        help="Training run name. Models are saved under training/models/<name>/.",
+        help="Training run name. Models are saved under training/eegnet_models/<name>/.",
     )
     parser.add_argument("--session_ids", nargs="+", required=True)
     parser.add_argument("--data_root", default="data/lr")

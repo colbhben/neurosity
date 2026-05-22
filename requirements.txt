@@ -4,3 +4,8 @@ numpy
 pandas
 torch
 matplotlib
+scipy
+h5py
+pyyaml
+timm==0.4.12
+einops

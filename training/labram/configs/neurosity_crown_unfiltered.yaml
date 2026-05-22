@@ -1,0 +1,10 @@
+name: neurosity_crown_unfiltered
+channels: [CP3, C3, F5, PO3, PO4, F6, C4, CP4]
+sample_rate_hz: 256
+target_sample_rate_hz: 200
+units: uV
+notch_hz: 50.0
+bandpass_hz: [0.1, 75.0]
+csv:
+  time_col: relative_time_ms
+  channel_col_template: "rawUnfiltered_{ch}"

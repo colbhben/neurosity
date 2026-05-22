@@ -7,6 +7,10 @@ Neurosity Crown. Two task pipelines are included:
 - **item_mux** — N-item pickup task (default `PEN` / `HIGHLIGHTER`) with item
   positions reshuffled every reset; the model jointly predicts the cued item
   and its starting slot.
+- **LaBraM finetuning** — generalized harness around the
+  [LaBraM](https://github.com/935963004/LaBraM) foundation model, configurable
+  per device (channel layout, sample rate) and per task (any combination of
+  classify / regress / spatial-grid / token-decoder heads).
 
 ## Setup
 
@@ -74,7 +78,7 @@ python training/train_lr.py \
 ```
 
 Reads sessions from `data/lr/`. Saves
-`training/models/<name>/lr_eegnet.pt` plus a sidecar JSON describing the
+`training/eegnet_models/<name>/lr_eegnet.pt` plus a sidecar JSON describing the
 preprocessing (channels, `active_s`, `T`, normalization), `train_params.json`,
 metrics CSV, and loss/accuracy/confusion plots.
 
@@ -82,7 +86,7 @@ metrics CSV, and loss/accuracy/confusion plots.
 
 ```bash
 python inference/inference_lr.py \
-    --model training/models/lr_baseline/lr_eegnet.pt \
+    --model training/eegnet_models/lr_baseline/lr_eegnet.pt \
     --session_ids 2026-05-19_17-14-52 \
     --name lr_eval
 ```
@@ -126,7 +130,7 @@ python training/train_item_mux.py \
 ```
 
 Reads sessions from `data/item_mux/`. Saves
-`training/models/<name>/item_mux_eegnet.pt` plus a sidecar JSON containing
+`training/eegnet_models/<name>/item_mux_eegnet.pt` plus a sidecar JSON containing
 the canonical `items` list and `n_locations`. Plots include combined loss,
 per-head accuracy, and per-head confusion matrices for train and val.
 
@@ -137,7 +141,7 @@ item set is inferred from its `events.csv` reset rows.
 
 ```bash
 python inference/inference_item_mux.py \
-    --model training/models/mux_baseline/item_mux_eegnet.pt \
+    --model training/eegnet_models/mux_baseline/item_mux_eegnet.pt \
     --session_ids 2026-05-19_17-14-52 \
     --name mux_eval
 ```
@@ -151,3 +155,85 @@ Reads sessions from `data/item_mux/`. Writes `predictions.csv`,
 - `per_session_accuracy.png` (item / location / joint bars)
 
 Output goes to `inference/data/<name>/`.
+
+## LaBraM finetuning
+
+Generalized harness for finetuning the LaBraM foundation model on any
+10-10–compliant device. Two YAML configs describe a run independently:
+
+- **device config** (`training/labram/configs/<device>.yaml`) — channel list,
+  source sample rate, target rate, bandpass / notch, CSV layout. Adding a new
+  device is a YAML edit; no code change.
+- **task config** (`training/labram/configs/task_*.yaml`) — data root, window
+  timing, and one or more heads (classify / regress / grid / token).
+  Multiple heads on one task train jointly with weighted-sum loss.
+
+Channels are masked via LaBraM's learned channel embedding — Neurosity's 8
+electrodes (CP3, C3, F5, PO3, PO4, F6, C4, CP4) are passed by name and the
+transformer attends only to those. No zero-padding or interpolation.
+
+### 0. Submodule + checkpoint
+
+```bash
+git submodule update --init third_party/labram
+# Then download a LaBraM pretrained checkpoint into
+#   third_party/labram/checkpoints/labram-base.pth
+# (release link in https://github.com/935963004/LaBraM)
+```
+
+### 1. Build cache (optional — `train.py` does it on demand)
+
+```bash
+python -m training.labram.preprocess \
+    --device_config training/labram/configs/neurosity_crown.yaml \
+    --task_config   training/labram/configs/task_lr.yaml \
+    --session_ids 2026-05-20_09-52-51 2026-05-20_09-55-42
+```
+
+Writes `data/labram_cache/<task>/<session>/{data.h5,manifest.json}`. Re-runs
+skip sessions whose source mtime + preprocessing hash are unchanged.
+
+### 2. Train
+
+```bash
+python -m training.labram.train \
+    --name labram_lr \
+    --device_config training/labram/configs/neurosity_crown.yaml \
+    --task_config   training/labram/configs/task_lr.yaml \
+    --session_ids 2026-05-20_09-52-51 2026-05-20_09-55-42 \
+    --epochs 50 --batch_size 16 \
+    --pretrained_ckpt third_party/labram/checkpoints/labram-base.pth
+```
+
+Saves `training/labram_models/<name>/{labram.pt,sidecar.json,train_params.json,metrics.csv,loss.png,per_head_loss.png}`.
+The sidecar carries the device + task configs so evaluation is reproducible.
+
+**Small-data tip.** With only a few hundred training trials, the default
+full-finetune recipe overfits within ~2 epochs (train_loss drops, val_loss
+climbs). For datasets under ~1k trials, prefer a frozen backbone (linear
+probe) — pass `--freeze_backbone --head_lr 1e-3 --epochs 30`. On the first
+10 LR sessions (433 trials) the frozen-backbone run reached val_loss 0.67
+and stayed stable, vs full-finetune's val_loss 0.67 at epoch 2 climbing to
+0.78 by epoch 50.
+
+Multi-head example using the existing item_mux data:
+
+```bash
+python -m training.labram.train \
+    --name labram_item_mux \
+    --device_config training/labram/configs/neurosity_crown.yaml \
+    --task_config   training/labram/configs/task_item_mux.yaml \
+    --session_ids 2026-05-20_15-50-12 \
+    --epochs 50 --batch_size 16
+```
+
+### 3. Evaluate
+
+```bash
+python -m training.labram.evaluate \
+    --name labram_lr \
+    --session_ids react_left_holdout react_right_holdout \
+    --data_root data/lr
+```
+
+Reports per-head accuracy / MSE / token-accuracy as appropriate.
