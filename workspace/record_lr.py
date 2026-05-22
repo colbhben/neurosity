@@ -45,7 +45,7 @@ def run_session(
     episode_length: float,
     reset_length: float,
     session_length: int,
-    data_root: str = "data",
+    data_root: str = "data/lr",
     seed: int = None,
     static_side: str = None,
 ):
@@ -147,8 +147,8 @@ def main():
     )
     parser.add_argument(
         "--data_root",
-        default="data",
-        help="Root directory for session output (default: data).",
+        default="data/lr",
+        help="Root directory for session output (default: data/lr).",
     )
     parser.add_argument(
         "--seed",

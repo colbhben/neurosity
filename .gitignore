@@ -2,6 +2,7 @@
 .DS_Store
 /data
 /inference/data
+/training/models
 venv
 dist
 build

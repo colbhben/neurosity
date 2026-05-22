@@ -99,20 +99,24 @@ def slice_windows(
     samples: np.ndarray,
     events: pd.DataFrame,
     target_T: int,
-    active_s: float,
+    window_start_ms: float,
+    window_end_ms: float,
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """Cut one (8, target_T) window per cue. Returns (X, y)."""
+    """Cut one (8, target_T) window per cue. Returns (X, y).
+
+    The slice covers cue_onset + [window_start_ms, window_end_ms).
+    """
     X_list = []
     y_list = []
-    active_ms = active_s * 1000.0
     for _, row in events.iterrows():
         if row["event"] != "cue":
             continue
         label = row["label"]
         if label not in LABEL_TO_ID:
             continue
-        t_start = float(row["relative_time_ms"])
-        t_end = t_start + active_ms
+        cue_ms = float(row["relative_time_ms"])
+        t_start = cue_ms + window_start_ms
+        t_end = cue_ms + window_end_ms
         mask = (times >= t_start) & (times < t_end)
         window = samples[mask]  # (T_actual, 8)
         if window.shape[0] == 0:
@@ -136,7 +140,10 @@ def slice_windows(
 
 
 def build_dataset(
-    session_ids: List[str], data_root: str
+    session_ids: List[str],
+    data_root: str,
+    window_start_ms: float = 0.0,
+    window_end_ms: float = None,
 ) -> Tuple[np.ndarray, np.ndarray, SessionTiming]:
     timings: List[SessionTiming] = []
     per_session = []
@@ -162,16 +169,45 @@ def build_dataset(
                 f"(tolerance {TIMING_TOLERANCE_MS}ms)"
             )
 
-    target_T = int(round(base.active_s * SAMPLING_RATE))
+    active_ms = base.active_s * 1000.0
+    if window_end_ms is None:
+        window_end_ms = active_ms
+    if window_start_ms < 0:
+        raise ValueError(f"--window_start_ms must be >= 0 (got {window_start_ms})")
+    if window_end_ms <= window_start_ms:
+        raise ValueError(
+            f"--window_end_ms ({window_end_ms}) must be > --window_start_ms ({window_start_ms})"
+        )
+    if window_end_ms > active_ms + TIMING_TOLERANCE_MS:
+        raise ValueError(
+            f"--window_end_ms ({window_end_ms}) exceeds active period "
+            f"({active_ms:.1f} ms) for session {session_ids[0]}"
+        )
+
+    target_T = int(round((window_end_ms - window_start_ms) / 1000.0 * SAMPLING_RATE))
     Xs, ys = [], []
     for sid, times, samples, events in per_session:
-        x, y = slice_windows(times, samples, events, target_T, base.active_s)
+        x, y = slice_windows(times, samples, events, target_T, window_start_ms, window_end_ms)
         print(f"  session {sid}: {x.shape[0]} episodes")
         Xs.append(x)
         ys.append(y)
     X = np.concatenate(Xs, axis=0) if Xs else np.empty((0, 8, target_T), dtype=np.float32)
     y = np.concatenate(ys, axis=0) if ys else np.empty((0,), dtype=np.int64)
     return X, y, base
+
+
+def mixup_batch(x: torch.Tensor, y: torch.Tensor, alpha: float):
+    """Apply mixup (Zhang et al. 2018) to a batch.
+
+    Returns (mixed_x, y_a, y_b, lam) so the caller can compute
+    lam * loss(logits, y_a) + (1 - lam) * loss(logits, y_b).
+    """
+    if alpha <= 0.0 or x.size(0) < 2:
+        return x, y, y, 1.0
+    lam = float(np.random.beta(alpha, alpha))
+    perm = torch.randperm(x.size(0), device=x.device)
+    mixed = lam * x + (1.0 - lam) * x[perm]
+    return mixed, y, y[perm], lam
 
 
 class EEGNet(nn.Module):
@@ -229,20 +265,33 @@ def train(args):
     torch.manual_seed(args.seed)
 
     print(f"Loading {len(args.session_ids)} session(s) from {args.data_root}/...")
-    X, y, timing = build_dataset(args.session_ids, args.data_root)
+    X, y, timing = build_dataset(
+        args.session_ids,
+        args.data_root,
+        window_start_ms=args.window_start_ms,
+        window_end_ms=args.window_end_ms,
+    )
     if X.shape[0] == 0:
         raise RuntimeError("No training samples found.")
+    window_ms = (
+        args.window_end_ms if args.window_end_ms is not None else timing.active_s * 1000.0
+    ) - args.window_start_ms
     print(
         f"Total samples: {X.shape[0]} "
         f"(LEFT={int((y == 0).sum())}, RIGHT={int((y == 1).sum())}). "
-        f"Window: {X.shape[2]} samples = {timing.active_s:.3f}s"
+        f"Window: {X.shape[2]} samples = {window_ms / 1000.0:.3f}s"
     )
 
-    # 80/20 episode-level split.
+    # 80/20 episode-level split (operates on raw windows; head-specific
+    # transforms are applied below). Shuffle is seeded so identical
+    # `--max_trials` subsets across heads see identical train/val splits.
     idx = np.arange(X.shape[0])
     np.random.shuffle(idx)
+    if args.max_trials is not None and args.max_trials < len(idx):
+        idx = idx[: args.max_trials]
     cut = max(1, int(round(0.8 * len(idx))))
     train_idx, val_idx = idx[:cut], idx[cut:]
+
     X_train = torch.from_numpy(X[train_idx])
     y_train = torch.from_numpy(y[train_idx])
     X_val = torch.from_numpy(X[val_idx]) if len(val_idx) else None
@@ -258,8 +307,15 @@ def train(args):
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {n_params}, device: {device}")
 
-    optim = torch.optim.Adam(model.parameters(), lr=args.lr)
+    # AdamW with weight decay regularizes the small EEGNet against the
+    # ~20pt train/val gap observed on this dataset. Mixup further smooths
+    # decision boundaries and is also active for the Riemann head.
+    weight_decay = 1e-4
+    optim = torch.optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=weight_decay
+    )
     loss_fn = nn.CrossEntropyLoss()
+    mixup_alpha = 0.1
 
     history = {
         "epoch": [],
@@ -268,6 +324,10 @@ def train(args):
         "val_loss": [],
         "val_acc": [],
     }
+    best_val_loss = float("inf")
+    best_val_acc = float("nan")
+    best_epoch = 0
+    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     for epoch in range(1, args.epochs + 1):
         model.train()
@@ -276,13 +336,16 @@ def train(args):
         train_total = 0
         for xb, yb in train_loader:
             xb, yb = xb.to(device), yb.to(device)
+            mixed_xb, ya, yb_perm, lam = mixup_batch(xb, yb, mixup_alpha)
             optim.zero_grad()
-            logits = model(xb)
-            loss = loss_fn(logits, yb)
+            logits = model(mixed_xb)
+            loss = lam * loss_fn(logits, ya) + (1.0 - lam) * loss_fn(logits, yb_perm)
             loss.backward()
             optim.step()
             train_loss += loss.item() * xb.size(0)
-            train_correct += (logits.argmax(1) == yb).sum().item()
+            # Train accuracy reported against the dominant mixup label.
+            dominant = ya if lam >= 0.5 else yb_perm
+            train_correct += (logits.argmax(1) == dominant).sum().item()
             train_total += xb.size(0)
         train_loss /= max(train_total, 1)
         train_acc = train_correct / max(train_total, 1)
@@ -299,8 +362,19 @@ def train(args):
                 f"epoch {epoch:3d}  train_loss={train_loss:.4f} acc={train_acc:.3f}  "
                 f"val_loss={val_loss:.4f} acc={val_acc:.3f}"
             )
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_val_acc = val_acc
+                best_epoch = epoch
+                best_state = {
+                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                }
         else:
             print(f"epoch {epoch:3d}  train_loss={train_loss:.4f} acc={train_acc:.3f}")
+            best_state = {
+                k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+            }
+            best_epoch = epoch
 
         history["epoch"].append(epoch)
         history["train_loss"].append(train_loss)
@@ -308,15 +382,27 @@ def train(args):
         history["val_loss"].append(val_loss)
         history["val_acc"].append(val_acc)
 
+    # Restore the best-val-loss weights before saving / plotting.
+    model.load_state_dict(best_state)
+    if X_val is not None and len(X_val) > 0:
+        print(
+            f"Best epoch {best_epoch}: val_loss={best_val_loss:.4f} val_acc={best_val_acc:.3f}"
+        )
+
     out_dir = os.path.join("training", "models", args.name)
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, "lr_eegnet.pt")
     torch.save(model.state_dict(), out_path)
+    effective_window_end_ms = (
+        args.window_end_ms if args.window_end_ms is not None else timing.active_s * 1000.0
+    )
     sidecar = {
         "channels": CHANNELS,
         "sampling_rate": SAMPLING_RATE,
         "active_s": timing.active_s,
         "reset_s": timing.reset_s,
+        "window_start_ms": float(args.window_start_ms),
+        "window_end_ms": float(effective_window_end_ms),
         "T": int(X.shape[2]),
         "normalization": "per_window_zscore",
         "label_to_id": LABEL_TO_ID,
@@ -333,11 +419,20 @@ def train(args):
         "name": args.name,
         "session_ids": args.session_ids,
         "data_root": args.data_root,
+        "max_trials": args.max_trials,
+        "window_start_ms": float(args.window_start_ms),
+        "window_end_ms": float(effective_window_end_ms),
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "lr": args.lr,
+        "weight_decay": weight_decay,
+        "mixup_alpha": mixup_alpha,
+        "checkpoint_strategy": "best_val_loss",
+        "best_epoch": int(best_epoch),
+        "best_val_loss": float(best_val_loss) if best_val_loss != float("inf") else None,
+        "best_val_acc": float(best_val_acc) if not math.isnan(best_val_acc) else None,
         "seed": args.seed,
-        "optimizer": "Adam",
+        "optimizer": "AdamW",
         "loss": "CrossEntropyLoss",
         "train_val_split": 0.8,
         "n_train": int(X_train.shape[0]),
@@ -463,7 +558,27 @@ def main():
         help="Training run name. Models are saved under training/models/<name>/.",
     )
     parser.add_argument("--session_ids", nargs="+", required=True)
-    parser.add_argument("--data_root", default="data")
+    parser.add_argument("--data_root", default="data/lr")
+    parser.add_argument(
+        "--max_trials",
+        type=int,
+        default=None,
+        help="If set, subsample (after seeded shuffle) to this many total "
+        "trials before the 80/20 split. Used by sweep driver.",
+    )
+    parser.add_argument(
+        "--window_start_ms",
+        type=float,
+        default=0.0,
+        help="Start of the per-cue window relative to cue onset (ms).",
+    )
+    parser.add_argument(
+        "--window_end_ms",
+        type=float,
+        default=None,
+        help="End of the per-cue window relative to cue onset (ms). "
+        "Defaults to the full active period.",
+    )
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-3)

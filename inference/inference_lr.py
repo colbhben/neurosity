@@ -348,8 +348,8 @@ def main():
                         help="Session directory names under --session_data_root.")
     parser.add_argument("--name", required=True,
                         help="Output subdir name under --data_root.")
-    parser.add_argument("--session_data_root", default="data",
-                        help="Root holding the recorded sessions (default: data).")
+    parser.add_argument("--session_data_root", default="data/lr",
+                        help="Root holding the recorded sessions (default: data/lr).")
     parser.add_argument("--data_root", default=os.path.join("inference", "data"),
                         help="Root for inference output (default: inference/data).")
     args = parser.parse_args()
