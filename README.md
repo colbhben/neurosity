@@ -11,6 +11,13 @@ Neurosity Crown. Two task pipelines are included:
   [LaBraM](https://github.com/935963004/LaBraM) foundation model, configurable
   per device (channel layout, sample rate) and per task (any combination of
   classify / regress / spatial-grid / token-decoder heads).
+- **clport (HITL CLIPort)** — human-in-the-loop episode collection on a
+  4-color `put-block-in-bowl` task using a forked
+  [CLIPort](https://github.com/cliport/cliport) sim. Trains a two-head
+  EEGNet `P(block_color, bowl_color | EEG)` and a CLIPort policy
+  `Pi(action | frame, goal_text [, EEG])`. See
+  [`docs/clport.md`](docs/clport.md) for the full pipeline, or the
+  "clport task" section below for a quickstart.
 
 ## Setup
 
@@ -237,3 +244,28 @@ python -m training.labram.evaluate \
 ```
 
 Reports per-head accuracy / MSE / token-accuracy as appropriate.
+
+## clport task (HITL CLIPort)
+
+Human-in-the-loop episode collection on a 4-color `put-block-in-bowl`
+sim, with EEG aligned to the entire scene. Trains:
+
+- `P(block_color, bowl_color | EEG)` — two-head EEGNet
+  ([`training/train_clport_eegnet.py`](training/train_clport_eegnet.py)).
+- `Pi(action | frame, goal_text [, EEG])` — CLIPort policy via
+  [`training/train_clport_policy.py`](training/train_clport_policy.py).
+
+CLIPort lives as a submodule under
+[`third_party/cliport`](third_party/cliport) (forked at
+`https://github.com/colbhben/cliport`). See
+[`docs/clport.md`](docs/clport.md) for the full setup, recording flow,
+training commands, split definitions, and current status.
+
+```bash
+# Quickstart (Crown attached, env set up per docs/clport.md).
+python workspace/record_clport.py --session_length 20 --pair_pool train
+python training/train_clport_eegnet.py \
+    --name clport_eegnet_v0 \
+    --session_dirs data/clport/<session_id> \
+    --epochs 50
+```

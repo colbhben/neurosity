@@ -1,3 +1,6 @@
 [submodule "third_party/labram"]
 	path = third_party/labram
 	url = https://github.com/935963004/LaBraM.git
+[submodule "third_party/cliport"]
+	path = third_party/cliport
+	url = git@github.com:colbhben/cliport.git
