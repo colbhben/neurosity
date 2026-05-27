@@ -1,0 +1,15 @@
+name: color_xy
+data_root: data/color
+window_start_ms: 0.0
+# Same 2.0s window as task_color.yaml (cue 0.5s + target 1.5s = 2.0s,
+# exactly 2 LaBraM patches at 200Hz).
+window_seconds: 2.0
+heads:
+  cue_xy:
+    type: regress
+    dim: 2
+    # `cue_x` / `cue_y` are recorded by workspace/record_color.py in pixel
+    # units (0..layout_w-1, 0..layout_h-1). Predictions live in pixel space.
+    target_fields: [cue_x, cue_y]
+    loss: mse
+    weight: 1.0

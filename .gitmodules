@@ -4,3 +4,9 @@
 [submodule "third_party/cliport"]
 	path = third_party/cliport
 	url = git@github.com:colbhben/cliport.git
+[submodule "third_party/ledmatrix"]
+	path = third_party/ledmatrix
+	url = git@github.com:colbhben/ledmatrix.git
+[submodule "third_party/dance"]
+	path = third_party/dance
+	url = https://github.com/colbhben/dance

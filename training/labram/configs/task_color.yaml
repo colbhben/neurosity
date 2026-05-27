@@ -1,0 +1,12 @@
+name: color
+data_root: data/color
+window_start_ms: 0.0
+# Cue (0.5s) + target (1.5s) = 2.0s active, exactly 2 LaBraM patches at
+# 200Hz (patch_size=200). Matches the recorder's default cue/target timing.
+window_seconds: 2.0
+heads:
+  color:
+    type: classify
+    classes: [RED, GREEN, BLUE, YELLOW]
+    weight: 1.0
+    label_field: label
